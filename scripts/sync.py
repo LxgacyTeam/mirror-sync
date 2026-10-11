@@ -1,5 +1,4 @@
 
-import base64
 import json
 import os
 import subprocess
@@ -9,8 +8,7 @@ import urllib.parse
 import urllib.request
 from pathlib import Path
 
-GH_ORG = "LxgacyTeam"
-CB_ORG = "LxgacyTeam"
+GH_USER = "LxgacyTeam"
 CB_USER = os.environ["CODEBERG_USER"]
 CB_TOKEN = os.environ["CODEBERG_TOKEN"]
 
@@ -23,14 +21,15 @@ SKIP = {"mirror-sync"}
 def api(method, url, token=None, data=None):
     headers = {
         "Accept": "application/json",
-        "User-Agent": "legacyteam-backup",
+        "User-Agent": "lxgacyteam-backup",
     }
+
     if token:
         headers["Authorization"] = f"token {token}"
 
     body = None
     if data is not None:
-        body = json.dumps(data).encode()
+        body = json.dumps(data).encode("utf-8")
         headers["Content-Type"] = "application/json"
 
     request = urllib.request.Request(
@@ -41,7 +40,7 @@ def api(method, url, token=None, data=None):
         with urllib.request.urlopen(request, timeout=60) as response:
             return json.load(response)
     except urllib.error.HTTPError as exc:
-        if exc.code == 404:
+        if exc.code == 404 and method == "GET":
             return None
         raise
 
@@ -51,26 +50,44 @@ def github_repositories():
 
     while True:
         url = (
-            f"{GH_API}/orgs/{GH_ORG}/repos"
-            f"?type=public&per_page=100&page={page}"
+            f"{GH_API}/users/{GH_USER}/repos"
+            f"?type=owner&per_page=100&page={page}"
         )
+
         repos = api("GET", url)
 
         if repos is None:
-            raise RuntimeError("GitHub organization not found")
+            raise RuntimeError("GitHub user not found")
 
         if not repos:
             break
 
         for repo in repos:
-            if repo["name"] not in SKIP and not repo["archived"]:
+            if (
+                repo["name"] not in SKIP
+                and not repo["private"]
+                and not repo["archived"]
+                and repo["owner"]["login"].lower() == GH_USER.lower()
+            ):
                 yield repo
 
         page += 1
 
 
-def has_main(repo_name):
-    url = f"https://github.com/{GH_ORG}/{repo_name}.git"
+def git(*args, cwd=None, env=None):
+    return subprocess.run(
+        ["git", *args],
+        cwd=cwd,
+        env=env,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+
+
+def has_main(name):
+    url = f"https://github.com/{GH_USER}/{name}.git"
+
     result = subprocess.run(
         ["git", "ls-remote", "--exit-code", "--heads", url, "main"],
         capture_output=True,
@@ -88,52 +105,67 @@ def has_main(repo_name):
 
 def ensure_codeberg_repo(repo):
     name = repo["name"]
-    encoded_org = urllib.parse.quote(CB_ORG, safe="")
+
+    owner = urllib.parse.quote(CB_USER, safe="")
     encoded_name = urllib.parse.quote(name, safe="")
 
     existing = api(
         "GET",
-        f"{CB_API}/repos/{encoded_org}/{encoded_name}",
+        f"{CB_API}/repos/{owner}/{encoded_name}",
         CB_TOKEN,
     )
 
     if existing is not None:
-        if existing["owner"]["login"].lower() != CB_ORG.lower():
-            raise RuntimeError("Unexpected Codeberg repository owner")
-        if existing["empty"] is False:
-            print(f"Existing Codeberg repo: {name}")
+        if existing["owner"]["login"].lower() != CB_USER.lower():
+            raise RuntimeError("Unexpected repository owner")
+        if existing.get("private"):
+            raise RuntimeError(
+                f"{name}: Codeberg repo is private; expected public"
+            )
+        print(f"Existing Codeberg repo: {name}", flush=True)
         return
 
-    print(f"Creating Codeberg repo: {name}")
+    print(f"Creating Codeberg repo: {name}", flush=True)
 
-    api(
+    created = api(
         "POST",
-        f"{CB_API}/orgs/{encoded_org}/repos",
+        f"{CB_API}/user/repos",
         CB_TOKEN,
         {
             "name": name,
             "description": repo.get("description") or "",
             "private": False,
             "auto_init": False,
+            "default_branch": "main",
         },
     )
+
+    if created is None or created.get("name") != name:
+        raise RuntimeError(f"Failed to create {name}")
 
 
 def sync(repo, workdir, askpass):
     name = repo["name"]
-    source = f"https://github.com/{GH_ORG}/{name}.git"
-    target = f"https://codeberg.org/{CB_ORG}/{name}.git"
+
+    source = f"https://github.com/{GH_USER}/{name}.git"
+    target = f"https://codeberg.org/{CB_USER}/{name}.git"
+
     destination = workdir / f"{name}.git"
 
     print(f"Syncing {name}", flush=True)
 
-    subprocess.run(
-        [
-            "git", "clone", "--bare",
-            "--single-branch", "--branch", "main",
-            source, str(destination),
-        ],
-        check=True,
+    git(
+        "clone",
+        "--bare",
+        "--single-branch",
+        "--branch", "main",
+        source,
+        str(destination),
+    )
+
+    source_sha = git(
+        "rev-parse", "refs/heads/main",
+        cwd=destination,
     )
 
     env = os.environ.copy()
@@ -142,15 +174,29 @@ def sync(repo, workdir, askpass):
     env["CB_USER_FOR_GIT"] = CB_USER
     env["CB_TOKEN_FOR_GIT"] = CB_TOKEN
 
-    subprocess.run(
-        [
-            "git", "-C", str(destination),
-            "push", target,
-            "refs/heads/main:refs/heads/main",
-        ],
-        check=True,
+    git(
+        "push",
+        target,
+        "refs/heads/main:refs/heads/main",
+        cwd=destination,
         env=env,
     )
+
+    remote_sha = git(
+        "ls-remote",
+        target,
+        "refs/heads/main",
+        cwd=destination,
+        env=env,
+    ).split()[0]
+
+    if source_sha != remote_sha:
+        raise RuntimeError(
+            f"{name}: SHA mismatch "
+            f"({source_sha} != {remote_sha})"
+        )
+
+    print(f"OK {name}: {source_sha[:12]}", flush=True)
 
 
 def main():

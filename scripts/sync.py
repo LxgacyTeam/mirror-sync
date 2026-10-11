@@ -229,48 +229,11 @@ def sync(repo, workdir, askpass):
         return
 
     if remote_sha:
-        git(
-            "fetch", "--no-tags",
-            target,
-            "refs/heads/main",
-            cwd=destination,
-            env=env,
+        print(
+            f"{name}: replacing Codeberg main "
+            f"({remote_sha[:12]} -> {expected_sha[:12]})",
+            flush=True,
         )
-
-        remote_commit = git(
-            "rev-parse", "FETCH_HEAD",
-            cwd=destination,
-        )
-
-        remote_message = git(
-            "log", "-1", "--format=%s",
-            remote_commit,
-            cwd=destination,
-        )
-
-        if remote_message == (
-            "docs: adapt README links for Codeberg"
-        ):
-            remote_base = git(
-                "rev-parse", f"{remote_commit}^",
-                cwd=destination,
-            )
-        else:
-            remote_base = remote_commit
-
-        result = subprocess.run(
-            [
-                "git", "merge-base", "--is-ancestor",
-                remote_base, source_sha,
-            ],
-            cwd=destination,
-        )
-
-        if result.returncode != 0:
-            raise RuntimeError(
-                f"{name}: Codeberg history diverged "
-                "from GitHub. Manual review required."
-            )
 
     git(
         "push",

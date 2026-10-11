@@ -3,9 +3,7 @@ name: Sync GitHub to Codeberg
 
 on:
   workflow_dispatch:
-
-  schedule:
-    - cron: "17 */6 * * *"
+  
 
 permissions:
   contents: read

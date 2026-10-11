@@ -1,4 +1,3 @@
-
 import json
 import os
 import subprocess
@@ -7,6 +6,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from pathlib import Path
+from readme_links import adapt_readmes
 
 GH_USER = "LxgacyTeam"
 CB_USER = os.environ["CODEBERG_USER"]
@@ -144,19 +144,19 @@ def ensure_codeberg_repo(repo):
         raise RuntimeError(f"Failed to create {name}")
 
 
+
 def sync(repo, workdir, askpass):
     name = repo["name"]
 
     source = f"https://github.com/{GH_USER}/{name}.git"
     target = f"https://codeberg.org/{CB_USER}/{name}.git"
 
-    destination = workdir / f"{name}.git"
+    destination = workdir / name
 
     print(f"Syncing {name}", flush=True)
 
     git(
         "clone",
-        "--bare",
         "--single-branch",
         "--branch", "main",
         source,
@@ -164,7 +164,43 @@ def sync(repo, workdir, askpass):
     )
 
     source_sha = git(
-        "rev-parse", "refs/heads/main",
+        "rev-parse", "HEAD",
+        cwd=destination,
+    )
+
+    changed_files = adapt_readmes(name, destination)
+
+    if changed_files:
+        print(
+            f"Adapted README files: {', '.join(changed_files)}",
+            flush=True,
+        )
+
+        git(
+            "add", "--", *changed_files,
+            cwd=destination,
+        )
+
+        git(
+            "config", "user.name",
+            "Codeberg Mirror Bot",
+            cwd=destination,
+        )
+
+        git(
+            "config", "user.email",
+            "mirror-bot@users.noreply.github.com",
+            cwd=destination,
+        )
+
+        git(
+            "commit",
+            "-m", "docs: adapt README links for Codeberg",
+            cwd=destination,
+        )
+
+    expected_sha = git(
+        "rev-parse", "HEAD",
         cwd=destination,
     )
 
@@ -174,29 +210,104 @@ def sync(repo, workdir, askpass):
     env["CB_USER_FOR_GIT"] = CB_USER
     env["CB_TOKEN_FOR_GIT"] = CB_TOKEN
 
-    git(
-        "push",
-        target,
-        "refs/heads/main:refs/heads/main",
-        cwd=destination,
-        env=env,
-    )
-
-    remote_sha = git(
+    remote_result = git(
         "ls-remote",
         target,
         "refs/heads/main",
         cwd=destination,
         env=env,
-    ).split()[0]
+    )
 
-    if source_sha != remote_sha:
-        raise RuntimeError(
-            f"{name}: SHA mismatch "
-            f"({source_sha} != {remote_sha})"
+    remote_sha = (
+        remote_result.split()[0]
+        if remote_result
+        else ""
+    )
+
+    if remote_sha == expected_sha:
+        print(f"Already up to date: {name}", flush=True)
+        return
+
+    if remote_sha:
+        git(
+            "fetch", "--no-tags",
+            target,
+            "refs/heads/main",
+            cwd=destination,
+            env=env,
         )
 
-    print(f"OK {name}: {source_sha[:12]}", flush=True)
+        remote_commit = git(
+            "rev-parse", "FETCH_HEAD",
+            cwd=destination,
+        )
+
+        remote_message = git(
+            "log", "-1", "--format=%s",
+            remote_commit,
+            cwd=destination,
+        )
+
+        if remote_message == (
+            "docs: adapt README links for Codeberg"
+        ):
+            remote_base = git(
+                "rev-parse", f"{remote_commit}^",
+                cwd=destination,
+            )
+        else:
+            remote_base = remote_commit
+
+        result = subprocess.run(
+            [
+                "git", "merge-base", "--is-ancestor",
+                remote_base, source_sha,
+            ],
+            cwd=destination,
+        )
+
+        if result.returncode != 0:
+            raise RuntimeError(
+                f"{name}: Codeberg history diverged "
+                "from GitHub. Manual review required."
+            )
+
+    git(
+        "push",
+        f"--force-with-lease=refs/heads/main:{remote_sha}",
+        target,
+        "HEAD:refs/heads/main",
+        cwd=destination,
+        env=env,
+    )
+
+    # Проверяем результат.
+    actual_result = git(
+        "ls-remote",
+        target,
+        "refs/heads/main",
+        cwd=destination,
+        env=env,
+    )
+
+    actual_sha = (
+        actual_result.split()[0]
+        if actual_result
+        else ""
+    )
+
+    if actual_sha != expected_sha:
+        raise RuntimeError(
+            f"{name}: SHA mismatch after push"
+        )
+
+    print(
+        f"OK {name}: "
+        f"GitHub={source_sha[:12]}, "
+        f"Codeberg={actual_sha[:12]}",
+        flush=True,
+    )
+
 
 
 def main():

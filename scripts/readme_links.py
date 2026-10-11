@@ -59,7 +59,6 @@ def adapt_readmes(repo_name: str, repo_dir: Path) -> list[str]:
             **rules.get(filename, {}),
         }
 
-        # Более длинные URL обрабатываем первыми.
         for old, new in sorted(
             replacements.items(),
             key=lambda item: len(item[0]),
@@ -67,7 +66,6 @@ def adapt_readmes(repo_name: str, repo_dir: Path) -> list[str]:
         ):
             updated = updated.replace(old, new)
 
-        # Универсальная замена.
         updated = updated.replace(
             "github.com",
             "codeberg.org",

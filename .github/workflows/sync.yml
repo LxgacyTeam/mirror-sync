@@ -1,0 +1,35 @@
+
+name: Sync GitHub to Codeberg
+
+on:
+  workflow_dispatch:
+
+  schedule:
+    - cron: "17 */6 * * *"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: codeberg-mirror
+  cancel-in-progress: false
+
+jobs:
+  mirror:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout automation
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Sync repositories
+        env:
+          CODEBERG_USER: ${{ secrets.CODEBERG_USER }}
+          CODEBERG_TOKEN: ${{ secrets.CODEBERG_TOKEN }}
+        run: python scripts/sync.py

@@ -39,40 +39,50 @@ SPECIAL_REPLACEMENTS = {
     },
 }
 
-
 def adapt_readmes(repo_name: str, repo_dir: Path) -> list[str]:
     changed_files = []
-
     rules = SPECIAL_REPLACEMENTS.get(repo_name, {})
 
     for filename in README_FILES:
-        path = repo_dir / filename
+        # Ищем README в корне и вложенных каталогах.
+        for path in repo_dir.rglob(filename):
+            relative = path.relative_to(repo_dir)
 
-        if not path.is_file():
-            continue
+            # Не трогаем Git и вложенные репозитории.
+            if ".git" in relative.parts:
+                continue
 
-        original = path.read_text(encoding="utf-8")
-        updated = original
+            if not path.is_file() or path.is_symlink():
+                continue
 
-        replacements = {
-            **rules.get("*", {}),
-            **rules.get(filename, {}),
-        }
+            original = path.read_text(encoding="utf-8")
+            updated = original
 
-        for old, new in sorted(
-            replacements.items(),
-            key=lambda item: len(item[0]),
-            reverse=True,
-        ):
-            updated = updated.replace(old, new)
+            replacements = {
+                **rules.get("*", {}),
+                **rules.get(filename, {}),
+            }
 
-        updated = updated.replace(
-            "github.com",
-            "codeberg.org",
+            for old, new in sorted(
+                replacements.items(),
+                key=lambda item: len(item[0]),
+                reverse=True,
+            ):
+                updated = updated.replace(old, new)
+
+            updated = updated.replace(
+                "github.com",
+                "codeberg.org",
+            )
+
+            if updated != original:
+                path.write_text(updated, encoding="utf-8")
+                changed_files.append(relative.as_posix())
+
+    if not changed_files:
+        print(
+            f"{repo_name}: no README links required adaptation",
+            flush=True,
         )
-
-        if updated != original:
-            path.write_text(updated, encoding="utf-8")
-            changed_files.append(filename)
-
+    
     return changed_files
